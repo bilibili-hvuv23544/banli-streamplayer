@@ -2,20 +2,18 @@
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import os
 import re
+import json
 import urllib.parse
 
 HTML_PAGE = '''<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>滚木网页播放器(MUSIC)</title>
-<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-<meta http-equiv="Pragma" content="no-cache">
-<meta http-equiv="Expires" content="0">
+<title>板栗网页播放器(MUSIC)</title>
 </head>
 <body>
 
-<audio id="player" controls style="width:100%%;max-width:600px;"></audio>
+<audio id="player" controls style="width:100%;max-width:600px;"></audio>
 <br>
 <div id="cover"></div>
 <div id="filename"></div>
@@ -33,16 +31,11 @@ const nameBox = document.getElementById('filename');
 const fileListDiv = document.getElementById('filelist');
 const debugDiv = document.getElementById('debug');
 
-const baseDir = location.pathname.substring(0, location.pathname.lastIndexOf('/') + 1);
-const musicDir = baseDir + 'my-music/';
-const defaultCover = baseDir + 'default/No-Cover.webp';
-
 const audioExts = ['.mp3', '.flac', '.ogg', '.wav'];
-let allAudioFiles = [];
 let debugInfo = [];
 
 function showDefault() {
-  coverBox.innerHTML = '<img src="' + defaultCover + '" style="max-width:300px;">';
+  coverBox.innerHTML = '<img src="/default/No-Cover.webp" style="max-width:300px;">';
 }
 
 function playFile(path) {
@@ -67,69 +60,33 @@ function playFile(path) {
     .catch(() => showDefault());
 }
 
-async function scanDirectory(dirPath, depth = 0) {
-  if (depth > 5) {
-    debugInfo.push('[跳过] 超过最大深度: ' + dirPath);
-    return;
-  }
-  
+// 通过API获取文件列表
+async function loadFileList() {
   try {
-    const response = await fetch(dirPath, {
-      cache: 'no-store',
-      headers: {
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache'
-      }
-    });
-    
+    const response = await fetch('/api/list');
     if (!response.ok) {
-      debugInfo.push('[HTTP ' + response.status + '] 无法访问: ' + dirPath);
-      return;
+      debugInfo.push('[错误] 获取文件列表失败: HTTP ' + response.status);
+      return [];
     }
-    
-    const html = await response.text();
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(html, 'text/html');
-    const links = doc.querySelectorAll('a');
-
-    for (const link of links) {
-      const href = link.getAttribute('href');
-      if (!href || href === './' || href === '../') continue;
-
-      const fullPath = dirPath + href;
-      const decodedFileName = decodeURIComponent(href);
-
-      if (href.endsWith('/')) {
-        debugInfo.push('[目录] ' + fullPath);
-        await scanDirectory(fullPath, depth + 1);
-        continue;
-      }
-
-      const ext = decodedFileName.substring(decodedFileName.lastIndexOf('.')).toLowerCase();
-      if (audioExts.includes(ext)) {
-        allAudioFiles.push({ name: decodedFileName, path: fullPath });
-      } else {
-        debugInfo.push('[其他] ' + fullPath);
-      }
-    }
+    const data = await response.json();
+    return data;
   } catch (err) {
-    debugInfo.push('[错误] ' + dirPath + ' — ' + err.message);
+    debugInfo.push('[错误] 获取文件列表失败: ' + err.message);
+    return [];
   }
 }
 
 (async () => {
-  debugInfo.push('扫描音频目录: ' + musicDir);
-  debugInfo.push('正在扫描...');
+  debugInfo.push('正在通过API获取文件列表...');
   
-  await scanDirectory(musicDir);
-
-  allAudioFiles.sort((a, b) => a.name.localeCompare(b.name));
-
-  if (allAudioFiles.length === 0) {
+  const files = await loadFileList();
+  
+  if (files.length === 0) {
     fileListDiv.textContent = '未找到音频文件';
+    debugInfo.push('未找到任何音频文件');
   } else {
     fileListDiv.innerHTML = '';
-    allAudioFiles.forEach(file => {
+    files.forEach(file => {
       const link = document.createElement('a');
       link.href = '#';
       link.textContent = file.name;
@@ -142,12 +99,12 @@ async function scanDirectory(dirPath, depth = 0) {
       fileListDiv.appendChild(link);
       fileListDiv.appendChild(document.createElement('br'));
     });
+    debugInfo.push('找到 ' + files.length + ' 个音频文件');
   }
 
   let debugOutput = '===== 调试输出 =====\\n';
-  debugOutput += '基准目录: ' + baseDir + '\\n';
-  debugOutput += '音频目录: ' + musicDir + '\\n';
-  debugOutput += '出现: ' + allAudioFiles.length + ' 个音频文件\\n';
+  debugOutput += '音频目录: my-music/\\n';
+  debugOutput += '出现: ' + files.length + ' 个音频文件\\n';
   debugOutput += '──────────────────────────\\n';
   debugOutput += debugInfo.join('\\n');
   debugDiv.textContent = debugOutput;
@@ -158,6 +115,9 @@ async function scanDirectory(dirPath, depth = 0) {
 </html>'''
 
 class MusicStreamingHandler(SimpleHTTPRequestHandler):
+    # 音频文件扩展名
+    AUDIO_EXTS = {'.mp3', '.flac', '.ogg', '.wav'}
+    
     def end_headers(self):
         self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
         self.send_header('Pragma', 'no-cache')
@@ -173,17 +133,68 @@ class MusicStreamingHandler(SimpleHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Headers', 'Range')
         self.end_headers()
 
+    def scan_directory(self, dir_path, max_depth=5):
+        """递归扫描目录，返回音频文件列表"""
+        audio_files = []
+        
+        def _scan(current_path, depth):
+            if depth > max_depth:
+                return
+            
+            try:
+                entries = os.listdir(current_path)
+                for entry in sorted(entries):
+                    full_path = os.path.join(current_path, entry)
+                    
+                    if os.path.isdir(full_path):
+                        _scan(full_path, depth + 1)
+                    elif os.path.isfile(full_path):
+                        # 检查扩展名
+                        _, ext = os.path.splitext(entry.lower())
+                        if ext in self.AUDIO_EXTS:
+                            # 转换为相对路径（相对于服务器根目录）
+                            rel_path = os.path.relpath(full_path, os.getcwd())
+                            # 确保使用正斜杠
+                            rel_path = rel_path.replace('\\\\', '/')
+                            audio_files.append({
+                                'name': entry,
+                                'path': '/' + rel_path
+                            })
+            except PermissionError:
+                pass
+            except Exception as e:
+                print(f'扫描目录出错 {current_path}: {e}')
+        
+        _scan(dir_path, 0)
+        return audio_files
+
     def do_GET(self):
-            parsed_path = urllib.parse.urlparse(self.path)
+        parsed_path = urllib.parse.urlparse(self.path)
         path = parsed_path.path
         
+        # API接口：获取音频文件列表
+        if path == '/api/list':
+            music_dir = os.path.join(os.getcwd(), 'my-music')
+            if os.path.exists(music_dir):
+                files = self.scan_directory(music_dir)
+            else:
+                files = []
+            
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(json.dumps(files, ensure_ascii=False).encode('utf-8'))
+            return
+        
+        # 返回播放器页面
         if path == '/' or path == '/index.html' or path == '/music-player.html':
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
             self.wfile.write(HTML_PAGE.encode('utf-8'))
             return
-            
+        
+        # 处理文件请求（支持Range）
         file_path = self.translate_path(self.path)
         range_header = self.headers.get('Range')
         
@@ -232,14 +243,13 @@ class MusicStreamingHandler(SimpleHTTPRequestHandler):
                     remaining = content_length
                     while remaining > 0:
                         try:
-                            chunk_size = min(65536, remaining)  
+                            chunk_size = min(65536, remaining)
                             data = f.read(chunk_size)
                             if not data:
                                 break
                             self.wfile.write(data)
                             remaining -= len(data)
                         except (BrokenPipeError, ConnectionResetError):
-
                             break
                 return
                 
@@ -260,22 +270,16 @@ class MusicStreamingHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
 if __name__ == '__main__':
-    import sys
-    
-    port = 20001  # 换个端口避免冲突
-    if len(sys.argv) > 1:
-        try:
-            port = int(sys.argv[1])
-        except ValueError:
-            print(f'端口号无效，使用默认端口 {port}')
+    port = 55555
     
     server = HTTPServer(('0.0.0.0', port), MusicStreamingHandler)
-    print(f'滚木网页播放器(MUSIC)启动成功!')
+    print(f'板栗网页播放器(MUSIC)已启动')
     print(f'访问地址: http://0.0.0.0:{port}')
     print(f'当前目录: {os.getcwd()}')
+    print(f'音频目录(相对目录中): ./my-music/')
     
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print('\n 服务器已停止')
+        print('\n服务器已停止')
         server.server_close()
