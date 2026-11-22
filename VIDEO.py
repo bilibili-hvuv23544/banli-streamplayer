@@ -7,7 +7,7 @@ HTML_PAGE = '''<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>滚木网页播放器(VIDEO)</title>
+<title>板栗网页播放器(VIDEO)</title>
 </head>
 <body>
 
@@ -172,8 +172,8 @@ class StreamingHandler(SimpleHTTPRequestHandler):
 if __name__ == '__main__':
     port = 11452
     server = HTTPServer(('0.0.0.0', port), StreamingHandler)
-    print(f'滚木网页播放器服务器启动: http://0.0.0.0:{port}')
-    print(f'滚木滚木')
+    print(f'板栗网页播放器服务器启动: http://0.0.0.0:{port}')
+    print(f'滚木滚木板栗板栗冰冰冰')
     try:
         server.serve_forever()
     except KeyboardInterrupt:
