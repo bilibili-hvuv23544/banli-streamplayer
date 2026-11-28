@@ -369,7 +369,7 @@ if __name__ == '__main__':
     
     port = 55556
     
-    server = HTTPServer(('0.0.0.0', port), MusicStreamingHandler)
+    server = ThreadingHTTPServer(('0.0.0.0', port), MusicStreamingHandler)
     print(f'板栗网页播放器(MUSIC)已启动')
     print(f'访问地址: http://0.0.0.0:{port}')
     print(f'当前目录: {os.getcwd()}')
