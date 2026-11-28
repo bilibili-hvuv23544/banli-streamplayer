@@ -1,0 +1,1 @@
+video_dir=/storage/emulated/0/Movies/VIDEO
